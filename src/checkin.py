@@ -25,7 +25,7 @@ from .env import load_local_env
 
 BASE_URL = "https://betadash.lunes.host"
 LOGIN_URL = f"{BASE_URL}/login"
-CHECKIN_URL = f"{BASE_URL}/points/signin" # 如果 Lunes Host 的签到页不是这个路径，请修改此处
+CHECKIN_URL = f"{BASE_URL}/login" # 如果 Lunes Host 的签到页不是这个路径，请修改此处
 
 MAX_ATTEMPTS = 3
 RETRY_INTERVAL_SECONDS = 30
