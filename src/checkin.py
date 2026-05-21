@@ -1,7 +1,7 @@
-"""VPS8 (vps8.zz.cd) 签到主流程。
+"""Lunes Host (betadash.lunes.host) 签到主流程。
 
 环境变量：
-    VPS8_EMAIL    (必填) 登录邮箱
+    VPS8_EMAIL    (必填) 登录邮箱 (为兼容现有 Actions Secret，保持变量名不变)
     VPS8_PASSWORD (必填) 登录密码
     TELEGRAM_BOT_TOKEN (可选)
     TELEGRAM_CHAT_ID   (可选)
@@ -23,9 +23,9 @@ import traceback
 from . import browser, notifier
 from .env import load_local_env
 
-BASE_URL = "https://vps8.zz.cd"
+BASE_URL = "https://betadash.lunes.host"
 LOGIN_URL = f"{BASE_URL}/login"
-CHECKIN_URL = f"{BASE_URL}/points/signin"
+CHECKIN_URL = f"{BASE_URL}/points/signin" # 如果 Lunes Host 的签到页不是这个路径，请修改此处
 
 MAX_ATTEMPTS = 3
 RETRY_INTERVAL_SECONDS = 30
@@ -90,7 +90,7 @@ def _contains_any(text: str, markers: tuple[str, ...]) -> bool:
 
 
 def _fill_email_and_password(page, email: str, password: str) -> None:
-    """根据 vps8 登录页结构填入邮箱和密码。"""
+    """根据登录页结构填入邮箱和密码。"""
     email_input = (
         page.ele("@@tag()=input@@type=email", timeout=2)
         or page.ele("@@tag()=input@@name=email", timeout=1)
@@ -252,10 +252,7 @@ def _go_to_checkin_page(page) -> None:
 
 
 def _click_checkin_action(page) -> bool:
-    """在签到页面尝试点击「立即签到」按钮。返回是否点击到。
-
-    必须用 button / role=button，避免点到顶部导航的「签到」<a> 链接。
-    """
+    """在签到页面尝试点击「立即签到」按钮。返回是否点击到。"""
     js = r"""
     const isVisible = (el) => {
       const style = window.getComputedStyle(el);
@@ -267,7 +264,6 @@ def _click_checkin_action(page) -> bool:
         && !el.disabled;
     };
     const keywords = ['立即签到', '点击签到', '签到领取', '今日签到'];
-    // 只选按钮类元素，明确排除 <a>（顶部导航的「签到」是 <a>）
     const candidates = Array.from(document.querySelectorAll(
       'button, [role="button"], input[type="button"], input[type="submit"]'
     ));
@@ -303,7 +299,7 @@ def do_checkin(page, email: str, password: str) -> str:
     _login(page, email, password)
     _go_to_checkin_page(page)
 
-    # 等签到页内容渲染（积分签到页是 SPA，进入后需要时间出"今日签到状态"等文字）
+    # 等待页面渲染
     time.sleep(2)
     page_text = _visible_page_text(page)
 
@@ -323,13 +319,11 @@ def do_checkin(page, email: str, password: str) -> str:
         browser.screenshot(page, "05-success")
         return "本日已签到"
 
-    # 签到页要求：先过 Cloudflare Turnstile，再点「立即签到」
     print("[checkin] 签到页：先处理 Cloudflare Turnstile")
     if not browser.solve_turnstile(page, timeout=60):
         browser.screenshot(page, "03c-checkin-turnstile-fail")
         raise TurnstileTimeout("签到页 Turnstile 未通过")
 
-    # 留一点缓冲，确保 token 已注入隐藏表单
     time.sleep(1.5)
     browser.screenshot(page, "03d-checkin-after-turnstile")
 
@@ -405,3 +399,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
