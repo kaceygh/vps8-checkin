@@ -1,10 +1,10 @@
 # VPS8 自动签到
 
-通过 GitHub Actions 每 8 小时定时访问 [vps8.zz.cd](https://vps8.zz.cd/login) 完成签到，自动处理 Cloudflare Turnstile 盾。
+通过 GitHub Actions 定时访问 [vps8.zz.cd](https://vps8.zz.cd/login) 完成签到，自动处理 Cloudflare Turnstile 盾。
 
 ## 工作原理
 
-1. GitHub Actions 触发（cron 每 8 小时一次，或手动 `workflow_dispatch`）
+1. GitHub Actions 触发（定时或手动 `workflow_dispatch`）
 2. ubuntu runner 安装 Python + Xvfb
 3. `xvfb-run` 启动虚拟显示器，DrissionPage 启动有头 Chrome
 4. 脚本访问登录页 → 填入邮箱/密码 → 处理 Cloudflare Turnstile → 点击「登录」
