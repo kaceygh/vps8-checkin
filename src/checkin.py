@@ -6,6 +6,7 @@
     TELEGRAM_BOT_TOKEN (可选)
     TELEGRAM_CHAT_ID   (可选)
     GITHUB_RUN_URL     (可选，由 workflow 注入)
+    VPS8_USER_AGENT    (可选) 自定义 UA
 
 退出码：
     0 - 登录(签到)成功
@@ -23,6 +24,7 @@ import traceback
 from . import browser, notifier
 from .env import load_local_env
 
+# 目标地址改为 betadash.lunes.host
 BASE_URL = "https://betadash.lunes.host"
 LOGIN_URL = f"{BASE_URL}/login"
 
@@ -81,7 +83,7 @@ def _fill_email_and_password(page, email: str, password: str) -> None:
 
 
 def _click_login_button(page) -> None:
-    """点击登录按钮，避开第三方登录按钮（GitHub/Google/Nodeloc）。"""
+    """点击登录按钮，避开第三方登录按钮。"""
     js = r"""
     const isVisible = (el) => {
       const style = window.getComputedStyle(el);
@@ -92,14 +94,14 @@ def _click_login_button(page) -> None:
         && rect.height > 0;
     };
     const blacklist = ['github', 'google', 'nodeloc', 'telegram', '注册', '忘记'];
-    const candidates = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]'));
+    const candidates = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"], a.btn'));
     const target = candidates.find((el) => {
       if (!isVisible(el)) return false;
       const text = (el.innerText || el.textContent || el.value || '').trim();
       if (!text) return false;
       const lower = text.toLowerCase();
       if (blacklist.some((b) => lower.includes(b))) return false;
-      return text === '登录' || text === '登 录' || text.includes('登录');
+      return text === '登录' || text === '登 录' || text.includes('登录') || lower === 'login' || lower === 'sign in';
     });
     if (!target) return false;
     target.scrollIntoView({block: 'center', inline: 'center'});
@@ -113,7 +115,6 @@ def _click_login_button(page) -> None:
         clicked = False
 
     if not clicked:
-        # 兜底：submit 按钮
         submit_btn = page.ele("tag:button@type=submit", timeout=2)
         if submit_btn:
             submit_btn.click()
@@ -140,21 +141,41 @@ def _login(page, email: str, password: str) -> None:
     print(f"[checkin] 访问登录页: {LOGIN_URL}")
     page.get(LOGIN_URL)
 
-    # 等密码框出现，确认表单渲染完毕
-    pass_input = page.ele("tag:input@type=password", timeout=20)
+    # 【核心修复1】第一时间处理前置的 Cloudflare 盾 (应对截图中的拦截)
+    print("[checkin] 正在等待页面初始加载，检查是否遭遇 Cloudflare 前置盾...")
+    time.sleep(4) 
+    try:
+        browser.solve_turnstile(page, timeout=20)
+    except Exception:
+        pass  # 如果没有盾，或者处理模块报错，继续往下走
+
+    # 【核心修复2】采用轮询方式等待密码框，给予 CF 验证后跳转充足的时间
+    print("[checkin] 等待登录表单渲染...")
+    pass_input = None
+    for _ in range(12): # 每次等2秒，总计等 24 秒
+        pass_input = (
+            page.ele("@@tag()=input@@type=password", timeout=1) or
+            page.ele("@@tag()=input@@name=password", timeout=1) or
+            page.ele("@@tag()=input@@placeholder:密码", timeout=1) or
+            page.ele("@@tag()=input@@id=password", timeout=1)
+        )
+        if pass_input:
+            break
+        time.sleep(2)
+
     if not pass_input:
         browser.screenshot(page, "01-login-no-form")
-        raise CheckinElementsNotFound("登录表单 20s 内未渲染")
+        raise CheckinElementsNotFound("登录表单未渲染，可能死卡在 Cloudflare 验证页，请查看截图")
 
     browser.screenshot(page, "01-login-page")
 
     _fill_email_and_password(page, email, password)
 
-    # 先处理 Cloudflare Turnstile 复选框（在点击登录之前）
-    print("[checkin] 尝试处理 Cloudflare Turnstile")
-    turnstile_ok = browser.solve_turnstile(page, timeout=60)
+    # 处理表单内部可能含有的 Turnstile 验证码
+    print("[checkin] 尝试处理表单上的 Cloudflare Turnstile")
+    turnstile_ok = browser.solve_turnstile(page, timeout=30)
     if not turnstile_ok:
-        print("[checkin] Turnstile 未确认通过，继续尝试登录")
+        print("[checkin] 未发现或未通过 Turnstile，继续尝试登录")
     else:
         time.sleep(1)
 
@@ -174,7 +195,7 @@ def do_checkin(page, email: str, password: str) -> str:
     _login(page, email, password)
 
     # 登录成功后，等待几秒钟让用户面板完全加载，以便截图更完整
-    print("[checkin] 登录成功，正在等待页面加载...")
+    print("[checkin] 登录成功，正在等待控制面板加载...")
     time.sleep(SUCCESS_SNAPSHOT_DELAY_SECONDS)
     
     browser.screenshot(page, "05-success")
