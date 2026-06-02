@@ -6,7 +6,6 @@
     TELEGRAM_BOT_TOKEN (可选)
     TELEGRAM_CHAT_ID   (可选)
     GITHUB_RUN_URL     (可选，由 workflow 注入)
-    VPS8_USER_AGENT    (可选) 自定义 UA
 
 退出码：
     0 - 登录(签到)成功
@@ -14,7 +13,7 @@
     2 - 配置错误（邮箱/密码缺失）
 """
 
-from __future__ import annotations
+from __future annotations
 
 import os
 import sys
@@ -24,7 +23,6 @@ import traceback
 from . import browser, notifier
 from .env import load_local_env
 
-# 目标地址改为 betadash.lunes.host
 BASE_URL = "https://betadash.lunes.host"
 LOGIN_URL = f"{BASE_URL}/login"
 
@@ -47,6 +45,15 @@ def _get_env_or_die(name: str) -> str:
         print(f"[fatal] 环境变量 {name} 未设置")
         sys.exit(2)
     return val
+
+
+def _visible_page_text(page) -> str:
+    try:
+        text = page.run_js("return document.body ? document.body.innerText : '';")
+        return (text or "").replace(" ", " ")
+    except Exception as exc:
+        print(f"[checkin] 获取页面可见文本失败: {exc}")
+        return ""
 
 
 def _fill_email_and_password(page, email: str, password: str) -> None:
@@ -140,19 +147,53 @@ def _wait_until_logged_in(page, timeout: int = 30) -> bool:
 def _login(page, email: str, password: str) -> None:
     print(f"[checkin] 访问登录页: {LOGIN_URL}")
     page.get(LOGIN_URL)
+    time.sleep(3)  # 给页面初始加载留出时间
 
-    # 【核心修复1】第一时间处理前置的 Cloudflare 盾 (应对截图中的拦截)
-    print("[checkin] 正在等待页面初始加载，检查是否遭遇 Cloudflare 前置盾...")
-    time.sleep(4) 
-    try:
-        browser.solve_turnstile(page, timeout=20)
-    except Exception:
-        pass  # 如果没有盾，或者处理模块报错，继续往下走
+    # =================【核心修复 1：前置破盾逻辑】=================
+    print("[checkin] 开始扫描页面，检查是否触发 Cloudflare 真人验证盾...")
+    
+    for cf_attempt in range(1, 6):
+        html_content = page.html
+        page_text = _visible_page_text(page)
+        
+        # 匹配是否卡在验证页
+        if "challenges.cloudflare.com" in html_content or "Verify you are human" in page_text or "challenge" in page.url:
+            print(f"[checkin] [警告] 确认遭遇 Cloudflare 拦截 (尝试穿透 {cf_attempt}/5)...")
+            browser.screenshot(page, f"00-cf-intercept-{cf_attempt}")
+            
+            # 寻找拦截盾的 Iframe 容器
+            iframe = page.ele("tag:iframe[src*='challenges.cloudflare.com']", timeout=5)
+            if iframe:
+                print("[checkin] 成功定位到 Cloudflare 验证框 Iframe")
+                try:
+                    # 强力穿透：直接模拟点击 Iframe 中心坐标点，通常可以直接盲点命中复选框
+                    print("[checkin] 尝试执行 Iframe 中心位物理盲点击...")
+                    iframe.click()
+                except Exception as e:
+                    print(f"[checkin] 盲点 Iframe 失败: {e}")
+                
+                # 同时调用项目原生的 solve_turnstile 逻辑双保险兜底
+                try:
+                    browser.solve_turnstile(page, timeout=10)
+                except Exception:
+                    pass
+            else:
+                print("[checkin] 未找到明确的 Iframe 标签，直接调用原生破盾函数兜底...")
+                try:
+                    browser.solve_turnstile(page, timeout=15)
+                except Exception:
+                    pass
+            
+            time.sleep(5)  # 每次点击后稳一稳，让浏览器执行刷新或跳转
+        else:
+            if cf_attempt > 1:
+                print("[checkin] Cloudflare 验证盾已消失，准备检索表单。")
+            break
 
-    # 【核心修复2】采用轮询方式等待密码框，给予 CF 验证后跳转充足的时间
-    print("[checkin] 等待登录表单渲染...")
+    # =================【核心修复 2：异步轮询检索表单】=================
+    print("[checkin] 正在检索登录表单...")
     pass_input = None
-    for _ in range(12): # 每次等2秒，总计等 24 秒
+    for i in range(15):  # 总计最大等待 30 秒
         pass_input = (
             page.ele("@@tag()=input@@type=password", timeout=1) or
             page.ele("@@tag()=input@@name=password", timeout=1) or
@@ -160,27 +201,41 @@ def _login(page, email: str, password: str) -> None:
             page.ele("@@tag()=input@@id=password", timeout=1)
         )
         if pass_input:
+            print(f"[checkin] 成功进入登录表单页面 (耗时 {i*2} 秒)")
             break
+            
+        # 容错：如果在等表单期间验证盾又刷新出来了，顺手再点一下
+        if "challenges.cloudflare.com" in page.html:
+            print("[checkin] 检索表单期间盾牌复活，尝试进行追加点击...")
+            try:
+                ifr = page.ele("tag:iframe[src*='challenges.cloudflare.com']", timeout=2)
+                if ifr:
+                    ifr.click()
+            except Exception:
+                pass
+                
         time.sleep(2)
 
     if not pass_input:
         browser.screenshot(page, "01-login-no-form")
-        raise CheckinElementsNotFound("登录表单未渲染，可能死卡在 Cloudflare 验证页，请查看截图")
+        raise CheckinElementsNotFound("未能突破 Cloudflare 拦截页，登录表单未渲染。请查看最新推送的错误截图")
 
     browser.screenshot(page, "01-login-page")
 
+    # 3. 填写表单
     _fill_email_and_password(page, email, password)
 
-    # 处理表单内部可能含有的 Turnstile 验证码
-    print("[checkin] 尝试处理表单上的 Cloudflare Turnstile")
-    turnstile_ok = browser.solve_turnstile(page, timeout=30)
-    if not turnstile_ok:
-        print("[checkin] 未发现或未通过 Turnstile，继续尝试登录")
-    else:
-        time.sleep(1)
+    # 4. 再次检查登录表单内部是否有内嵌式 Turnstile 验证
+    print("[checkin] 检查表单内部是否含有内嵌式 Turnstile...")
+    try:
+        browser.solve_turnstile(page, timeout=15)
+    except Exception:
+        pass
+    time.sleep(1)
 
     browser.screenshot(page, "01a-after-turnstile")
 
+    # 5. 点击登录并等待跳转
     _click_login_button(page)
 
     if not _wait_until_logged_in(page, timeout=30):
@@ -194,7 +249,6 @@ def do_checkin(page, email: str, password: str) -> str:
     """执行登录即签到流程。"""
     _login(page, email, password)
 
-    # 登录成功后，等待几秒钟让用户面板完全加载，以便截图更完整
     print("[checkin] 登录成功，正在等待控制面板加载...")
     time.sleep(SUCCESS_SNAPSHOT_DELAY_SECONDS)
     
